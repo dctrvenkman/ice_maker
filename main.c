@@ -5,25 +5,24 @@
  * Created on January 22, 2016, 8:58 PM
  */
 
-/*
- * WIRING:
- * RA0 = Vcap (.1uF - 1uF)
- * RA1 (Analog input) = ROOM SR
- * RA2 (Analog input) = LNSR
- * 
- * (Digital input) = ON/OFF Button
- * (Digital output) = ON/OFF LED
- * (Digital output) = ADD WATER LED
- * (Digital output) = FULL ICE LED
- * 
- * RC2 (Digital output / PWM) = FAN
- * RA3 (Digital output) = PUMP
- * RA4 (Digital output) = COMP
- * 
- * RA5 (Digital input???) = WATER
- * RC0 (Digital output) = WATERV
- * RC1 (Digital output) = VALVE
- * RB0 (Digital input) need pullup? = CKKG
+
+/* TODO: UPDATE FOR NEW BOARD
+ * Chip Wiring:
+ * RA1 (Analog input) = Ambient temperature thermistor
+ * RA2 (Analog input) = Low side compressor temperature thermistor
+ * RA3 (Digital output) = Water pump (pumps water over evaporation tray)
+ * RA4 (Digital output) = Compressor
+ * RA5 (Digital input) = Water level sensor
+ * RB0 (Digital input) = Ice fall lever
+ * RB3 (Digital input) = ON/OFF Button
+ * RB4 (Digital output) = Add water LED
+ * RB5 (Digital output) = ON/OFF LED
+ * RC0 (Digital output) = Reservoir drain valve (drains water from fill reservoir)
+ * RC1 (Digital output) = Heater valve (directs high side to evaporation tray to release ice cubes)
+ * RC2 (Digital output / PWM) = Condenser Fan
+ * RC3 (Digital output) = Ice full LED
+ * RC6 (Digital output) = UART TX
+ * RC7 (Digital output) = UART RX
  */
 
 /*
@@ -42,52 +41,35 @@
  *  80 =  1258
  *  90 =   917
  * 100 =   679
+ * 
+ * Measured
+ * 72.5 =5.53k
+ * 73 = 5k
+ * 76 =04.8k
+ * 
+ * 
  */
 
 
 #include <xc.h>
 #include <stdio.h>
+#include <stdbool.h>
+#include "definitions.h"
 
 /* UART used for debugging */
 #define UART_ENABLE
 
-/* Internal Oscillator w/ PLL enabled -> Sys Clock = 16MHz */
-#define _XTAL_FREQ 16000000
-
-/* Wrapper Macros */
-#define SET_FAN_SPEED(x) CCPR1L = x
-#define TURN_PUMP_ON() PORTAbits.RA3 = 1
-#define TURN_PUMP_OFF() PORTAbits.RA3 = 0
-#define TURN_COMPRESSOR_ON() PORTAbits.RA4 = 1
-#define TURN_COMPRESSOR_OFF() PORTAbits.RA4 = 0
-#define TURN_WATERV_ON() PORTCbits.RC0 = 1
-#define TURN_WATERV_OFF() PORTCbits.RC0 = 0
-#define TURN_VALVE_ON() PORTCbits.RC1 = 1
-#define TURN_VALVE_OFF() PORTCbits.RC1 = 0
-#if 0
-#define TURN_LOW_WATER_LED_ON() PORTBbits.RB0 = 1
-#define TURN_LOW_WATER_LED_OFF() PORTBbits.RB0 = 0
-#define TURN_ICE_FULL_LED_ON() PORTBbits.RB0 = 1
-#define TURN_ICE_FULL_LED_OFF() PORTBbits.RB0 = 0
-#define TURN_POWER_LED_ON() PORTBbits.RB0 = 1
-#define POWER_LED_OFF() PORTBbits.RB0 = 0
-#endif
-
-typedef enum
-{
-    OFF,
-    INIT,
-    MAKING_ICE,
-    RELEASING_ICE,
-    FAIL
-}state_t;
-
 /* Counters generated from Timer2 interrupt */
 extern unsigned char elapsed_seconds;
 extern unsigned char elapsed_minutes;
+/* Events detected by interrupt */
+extern bool ice_fall_event;
+
+// State machine state
+state_t state = OFF;
 
 /*
- * Used to determing the duration of active ice making
+ * Used to determine the duration of active ice making
  * The longer the duration the larger the ice.
  */
 unsigned char minutes_for_ice_making = 30;
@@ -108,6 +90,13 @@ void UartPrint(unsigned char* data)
         while(!PIR1bits.TXIF)
             ;
         TXREG = data[i++];
+		
+		if(data[i-1] == '\n')
+		{
+			while(!PIR1bits.TXIF)
+				;
+			TXREG = '\r';
+		}
     }
 }
 #else
@@ -118,11 +107,18 @@ void UartPrint(unsigned char* data)
 
 void main(void)
 {
-    unsigned char LNSR_V;
-    unsigned char ROOMSR_V;
+    unsigned char low_side_temp_v;
+    unsigned char ambient_temp_v;
     char tmpString[16];
-    state_t state = OFF;
   
+	
+	ANSELB = 0;
+	TRISBbits.TRISB5 = 0;
+	TURN_POWER_LED_ON();
+	
+	
+	
+	
     /*
      * Configure System Clock for 16MHz
      */
@@ -134,10 +130,13 @@ void main(void)
     /* Set all pins to digital */
     ANSELA = 0;
     ANSELB = 0;
-    /* RA1 = Analong input */
+	/* Enable weak pull-up option on PORTB */
+	OPTION_REGbits.nRBPU = 0;
+	
+    /* RA1 = Analong input (Ambient temp) */
     TRISAbits.TRISA1 = 1;
     ANSELAbits.ANSA1 = 1;
-    /* RA2 = Analog input */
+    /* RA2 = Analog input (Low side temp) */
     TRISAbits.TRISA2 = 1;
     ANSELAbits.ANSA2 = 1;
     /* ADFVR[1..0] Sets ADC internal fixed voltage reference:
@@ -159,9 +158,8 @@ void main(void)
     ADCON1bits.ADCS = 0b101;
     /* Enable ADC Module */
     ADCON0bits.ADON = 1;
-    
-    
-	/* Configure PWM on pin C2 */
+	
+	/* Configure PWM on pin C2 (Condenser Fan) */
 	/* Set CCP1 as PWM */
 	CCP1CONbits.CCP1M = 0b1100; 
 	/* Set PWM MSBs */
@@ -184,20 +182,38 @@ void main(void)
 	/* Clear TMR2 counter register */
 	TMR2 = 0;
     
-	/* Set pin C2 as output (FAN PWM) */
-	TRISCbits.TRISC2 = 0;
-	/* Set pin A3 as output (PUMP) */
-	TRISAbits.TRISA3 = 0;
-	/* Set pin A4 as output (COMPRESSOR) */
-	TRISAbits.TRISA4 = 0;
-	/* Set pin C0 as output (WATERV) */
-	TRISCbits.TRISC0 = 0;
-	/* Set pin C1 as output (VALVE) */
-	TRISCbits.TRISC1 = 0;
-	/* TODO: Determine direction A5 (WATER) */		
-    //TRISAbits.TRISA4 = 0;
-	/* TODO: Determine if B0 needs pullup (CKKG) */
 	
+	/* Set pin A3 as output (Water Pump) */
+	TRISAbits.TRISA3 = 0;
+	/* Set pin A4 as output (Compressor) */
+	TRISAbits.TRISA4 = 0;
+	/* Set pin A5 as input (Water level sensor) */		
+    //TRISAbits.TRISA5 = 1;
+	
+	/* Set pin B0 as input (Ice fall lever) */
+	//TRISBbits.TRISB0 = 1;
+	/* Enable weak pull-up on B0 */
+	WPUBbits.WPUB0 = 1;
+	/* Enable interrupt on change for pin B0 */
+	IOCBbits.IOCB0 = 1;
+	/* Set pin B3 as input (Power button) */
+	//TRISBbits.TRISB3 = 1;
+	/* Enable interrupt on change for pin B3 */
+	IOCBbits.IOCB3 = 1;
+	/* Set pin B4 as output (Water LED) */
+	TRISBbits.TRISB4 = 0;
+	/* Set pin B5 as output (Power LED) */
+	TRISBbits.TRISB5 = 0;
+	
+	/* Set pin C0 as output (Reservoir drain valve) */
+	TRISCbits.TRISC0 = 0;
+	/* Set pin C1 as output (Heater valve) */
+	TRISCbits.TRISC1 = 0;
+	/* Set pin C2 as output (Fan PWM) */
+	TRISCbits.TRISC2 = 0;
+	/* Set pin C3 as output (Ice LED) */
+	TRISCbits.TRISC3 = 0;
+		
 	
 #ifdef UART_ENABLE
     /* UART Config */
@@ -213,14 +229,176 @@ void main(void)
     TXSTAbits.TXEN = 1;
 #endif
 
+	/* Enable PORTB interrupt on change */
+	INTCONbits.RBIE = 1;
 	/* Enable peripheral interrupts */
 	INTCONbits.PEIE = 1;
 	/* Enable global interrupts */
 	ei();
 	
 	/* NOTE: Cast added to get rid of warnings */
+	UartPrint((unsigned char*)"\x1B[2J\x1B[H");
 	UartPrint((unsigned char*)"Controller ");
 	UartPrint((unsigned char*)"initialized.\n");
+	
+	/* Start with everything off */
+	ALL_OFF();
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	UartPrint((unsigned char*)"q - Power LED toggle\n");
+	UartPrint((unsigned char*)"w - Water LED toggle\n");
+	UartPrint((unsigned char*)"e - Ice LED toggle\n");
+	UartPrint((unsigned char*)"r - Fan Off\n");
+	UartPrint((unsigned char*)"t - Fan 50%\n");
+	UartPrint((unsigned char*)"y - Fan 100%\n");
+	UartPrint((unsigned char*)"a - Measure temps\n");
+	UartPrint((unsigned char*)"s - Water pump on\n");
+	UartPrint((unsigned char*)"d - Water pump off\n");
+	UartPrint((unsigned char*)"f - Compressor on\n");
+	UartPrint((unsigned char*)"g - Compressor off\n");
+	UartPrint((unsigned char*)"h - Reservoir valve on\n");
+	UartPrint((unsigned char*)"j - Reservoir valve off\n");
+	UartPrint((unsigned char*)"z - Tank full\n");
+	UartPrint((unsigned char*)"x - Heater valve on\n");
+	UartPrint((unsigned char*)"c - Heater valve off\n");
+	UartPrint((unsigned char*)"space - ALL OFF\n");
+	
+	while(1)
+	{
+		unsigned char rx_byte;
+		if(PIR1bits.RCIF)
+		{
+			rx_byte = RCREG;
+			switch(rx_byte)
+			{
+				case 'q':
+					if(PORTBbits.RB5)
+						TURN_POWER_LED_OFF();
+					else
+						TURN_POWER_LED_ON();
+					break;
+				case 'w':
+					if(PORTBbits.RB4)
+						TURN_LOW_WATER_LED_OFF();
+					else
+						TURN_LOW_WATER_LED_ON();
+					break;
+				case 'e':
+					if(PORTCbits.RC3)
+						TURN_ICE_FULL_LED_OFF();
+					else
+						TURN_ICE_FULL_LED_ON();
+					break;
+				case 'r':
+					SET_FAN_SPEED(0x00);
+					break;
+				case 't':
+					SET_FAN_SPEED(0x80);
+					break;
+				case 'y':
+					SET_FAN_SPEED(0xff);
+					break;
+				case 'a':
+					/* Select ADC Channel 1 (AN1) */
+					ADCON0bits.CHS = 1;
+					/* Start ADC */
+					ADCON0bits.GO = 1;
+					/* Wait for ADC to complete */
+					while(ADCON0bits.nDONE)
+						;
+					/* Clear ADC interrupt MAY NOT BE NEEDED */
+					PIR1bits.ADIF = 0;
+					/* Read ambient temp thermistor voltage */
+					ambient_temp_v = ADRES;
+
+					/* Select ADC Channel 2 (AN2) */
+					ADCON0bits.CHS = 2;
+					/* Start ADC */
+					ADCON0bits.GO = 1;
+					/* Wait for ADC to complete */
+					while(ADCON0bits.nDONE)
+						;
+					/* Clear ADC interrupt MAY NOT BE NEEDED */
+					PIR1bits.ADIF = 0;
+					/* Read low side temp thermistor voltage */
+					low_side_temp_v = ADRES;
+
+					sprintf(tmpString, "Ambient: 0x%x\n", ambient_temp_v);
+					UartPrint(tmpString);
+					sprintf(tmpString, "Low Side: 0x%x\n", low_side_temp_v);
+					UartPrint(tmpString);
+					break;
+				case 's':
+					TURN_WATER_PUMP_ON();
+					break;
+				case 'd':
+					TURN_WATER_PUMP_OFF();
+					break;
+				case 'f':
+					TURN_COMPRESSOR_ON();
+					break;
+				case 'g':
+					TURN_COMPRESSOR_OFF();
+					break;
+				case 'h':
+					TURN_ON_RESERVOIR_VALVE();
+					break;
+				case 'j':
+					TURN_OFF_RESERVOIR_VALVE();
+					break;
+				case 'z':
+					if(TANK_IS_FULL())
+						UartPrint((unsigned char*)"Tank full\n");
+					else
+						UartPrint((unsigned char*)"Tank not full\n");
+					break;
+				case 'x':
+					TURN_HEATER_VALVE_ON();
+					break;
+				case 'c':
+					TURN_HEATER_VALVE_OFF();
+					break;
+				case ' ':
+					ALL_OFF();
+					break;
+			}
+		}
+		
+		if(ice_fall_event)
+		{
+			ice_fall_event = false;
+			UartPrint((unsigned char*)"Ice fall trigger\n");
+		}
+		
+		if(state == OFF)
+			TURN_POWER_LED_OFF();
+		else
+			TURN_POWER_LED_ON();
+	}
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+#if 0
 	
     /* Main program loop */
     while(1)
@@ -234,9 +412,8 @@ void main(void)
             ;
         /* Clear ADC interrupt MAY NOT BE NEEDED */
         PIR1bits.ADIF = 0;
-		/* Read ROOM ST thermistor */
-        ROOMSR_V = ADRES;
-        
+		/* Read ambient temp thermistor voltage */
+        ambient_temp_v = ADRES;
         
         /* Select ADC Channel 2 (AN2) */
         ADCON0bits.CHS = 2;
@@ -247,45 +424,66 @@ void main(void)
             ;
         /* Clear ADC interrupt MAY NOT BE NEEDED */
         PIR1bits.ADIF = 0;
-		/* Read LNSR thermistor */
-        LNSR_V = ADRES;
+		/* Read low side temp thermistor voltage */
+        low_side_temp_v = ADRES;
        
-
-		//UartPrint("\x1B[2J");
-        UartPrint((unsigned char*)"STATE: ");
+		// Clear console
+		UartPrint((unsigned char*)"\x1B[2J\x1B[H");
+        UartPrint((unsigned char*)"State: ");
         switch(state)
         {
             case OFF:
-                sprintf(tmpString, "OFF\n");
+				/* Nothing to be done as the interrupt handles it */
+                sprintf(tmpString, "Off\n");
                 break;
             case INIT:
+				/* Fill the tank by draining water from the reservoir */
+				if(TANK_IS_FULL())
+				{
+					TURN_OFF_RESERVOIR_VALVE();
+					state = MAKING_ICE;
+				}
+				else
+					TURN_ON_RESERVOIR_VALVE();
                 sprintf(tmpString, "Init\n");
                 break;
             case MAKING_ICE:
+				/* Maintain a full tank by pulling from the reservoir as needed */
+				if(TANK_IS_FULL())
+					TURN_OFF_RESERVOIR_VALVE();
+				else
+					TURN_ON_RESERVOIR_VALVE();
+				
+				
                 sprintf(tmpString, "Making Ice\n");
                 break;
             case RELEASING_ICE:
-                sprintf(tmpString, "Releaseing Ice\n");
+                sprintf(tmpString, "Releasing Ice\n");
                 break;
-            case FAIL:
-                sprintf(tmpString, "Failure\n");
-                break;
+			case OUT_OF_WATER:
+				ALL_OFF();
+				TURN_LOW_WATER_LED_ON();
+				break;
+			case ICE_BIN_FULL:
+				ALL_OFF();
+				TURN_ICE_FULL_LED_ON();
+				break;
             default:
                 sprintf(tmpString, "UNKNOWN\n");
         }
         UartPrint(tmpString);
 		sprintf(tmpString, "Time: %0.2d:%0.2d\n", elapsed_minutes, elapsed_seconds);
 		UartPrint(tmpString);
-        sprintf(tmpString, "LNSR: 0x%x\n", LNSR_V);
-        UartPrint(tmpString);
-        sprintf(tmpString, "ROOMSR: 0x%x\n", ROOMSR_V);
+        sprintf(tmpString, "Ambient: 0x%x\n", ambient_temp_v);
+		UartPrint(tmpString);
+		sprintf(tmpString, "Low Side: 0x%x\n", low_side_temp_v);
         UartPrint(tmpString);
 		sprintf(tmpString, "\n");
         UartPrint(tmpString);
-
+		
 		
         __delay_ms(1000);
     }
-    
+#endif
     return;
 }
