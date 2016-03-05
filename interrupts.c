@@ -56,7 +56,7 @@ void interrupt low_isr(void)
 			ice_fall_event = true;
 		
 		// Power button key down (Falling edge)
-		if(!(tmp & _PORTB_RB3_MASK)) 
+		if(!(tmp & _PORTB_RB1_MASK))
 		{
 			if(state == OFF)
 			{
@@ -67,7 +67,7 @@ void interrupt low_isr(void)
 			{
 				// Turn everything off
 				ALL_OFF();
-				state == OFF;
+				state = OFF;
 			}
 		}
 	}
