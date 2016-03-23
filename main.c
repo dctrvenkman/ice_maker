@@ -53,7 +53,7 @@ state_t state = OFF;
  * Used to determine the duration of active ice making
  * The longer the duration the larger the ice.
  */
-unsigned char ice_making_duration = 2;
+unsigned char ice_making_duration = 30;
 
 
 #ifdef UART_ENABLE
@@ -90,6 +90,7 @@ void main(void)
 {
     unsigned char low_side_temp_v;
     unsigned char ambient_temp_v;
+    unsigned char water_level_v;
 	unsigned char reservoir_fill_timer;
     char tmpString[24];
  	
@@ -115,6 +116,9 @@ void main(void)
     /* RA2 = Analog input (Low side temp) */
     TRISAbits.TRISA2 = 1;
     ANSELAbits.ANSA2 = 1;
+    /* RB2 = Analog input (Water level) */
+    TRISBbits.TRISB2 = 1;
+    ANSELBbits.ANSB2 = 1;
     /* ADFVR[1..0] Sets ADC internal fixed voltage reference:
      * 00 = off
      * 01 = 1.024V
@@ -167,19 +171,21 @@ void main(void)
 	TRISAbits.TRISA4 = 0;
 		
 	/* Set pin B0 as input (Ice fall lever) */
-	//TRISBbits.TRISB0 = 1;
+	TRISBbits.TRISB0 = 1;
 	/* Enable weak pull-up on B0 */
 	WPUBbits.WPUB0 = 1;
 	/* Enable interrupt on change for pin B0 */
 	IOCBbits.IOCB0 = 1;
 	/* Set pin B1 as input (Power button) */
-	//TRISBbits.TRISB1 = 1;
+	TRISBbits.TRISB1 = 1;
 	/* Enable weak pull-up on B1 */
 	WPUBbits.WPUB1 = 1;
 	/* Enable interrupt on change for pin B1 */
 	IOCBbits.IOCB1 = 1;
 	/* Set pin B2 as input (Water level sensor) */		
     //TRISBbits.TRISB2 = 1;
+    /* Enable weak pull-up on B2 */
+	//WPUBbits.WPUB2 = 1;
 	/* Set pin B3 as output (Fan PWM) */
 	TRISBbits.TRISB3 = 0;
 	/* Set pin B5 as output (Power LED) */
@@ -224,6 +230,10 @@ void main(void)
 	/* Start with everything off */
 	ALL_OFF();
 	
+    if(!(PORTB & _PORTB_RB1_MASK))
+    {
+        state = RELEASING_ICE;
+    }
 	
 	/* Main program loop */
 	while(1)
@@ -240,7 +250,7 @@ void main(void)
 		/* Read low side temp thermistor voltage */
 		low_side_temp_v = ADRES;
 		
-		
+#if 0
 		/* Select ADC Channel 2 (AN2) */
 		ADCON0bits.CHS = 2;
 		/* Start ADC */
@@ -252,7 +262,22 @@ void main(void)
 		PIR1bits.ADIF = 0;
 		/* Read ambient temp thermistor voltage */
 		ambient_temp_v = ADRES;
+#endif
 		
+        
+        /* Select ADC Channel 8 (AN8) */
+		ADCON0bits.CHS = 8;
+		/* Start ADC */
+		ADCON0bits.GO = 1;
+		/* Wait for ADC to complete */
+		while(ADCON0bits.nDONE)
+			;
+		/* Clear ADC interrupt MAY NOT BE NEEDED */
+		PIR1bits.ADIF = 0;
+		/* Read low side temp thermistor voltage */
+		water_level_v = ADRES;
+        
+        
 		// Clear console
 		UartPrint((unsigned char*)"\x1B[2J\x1B[H");
 		
@@ -449,6 +474,8 @@ void main(void)
 				{
 					/*  Open the heater valve and wait for the ice to fall */
 					OPEN_HEATER_VALVE();
+                    SET_FAN_SPEED(0xff);
+					TURN_COMPRESSOR_ON();
 				}
                 sprintf(tmpString, "Releasing Ice\n");
                 break;
@@ -470,6 +497,7 @@ void main(void)
         UartPrint(tmpString);
 #endif
 		
+#if 0
 		sprintf(tmpString, "Time: %0.2d:%0.2d\n", elapsed_minutes, elapsed_seconds);
 		UartPrint(tmpString);
         sprintf(tmpString, "Ambient Temp: 0x%x\n", ambient_temp_v);
@@ -484,12 +512,38 @@ void main(void)
         UartPrint(tmpString);
         sprintf(tmpString, "Tank: %s\n", TANK_IS_FULL() ? "Full" : "Not Full");
         UartPrint(tmpString);
+        sprintf(tmpString, "Water level: 0x%x\n", water_level_v);
+        UartPrint(tmpString);
         sprintf(tmpString, "Water Valve: %s\n", RESERVOIR_VALVE_IS_OPEN() ? "Open" : "Closed");
         UartPrint(tmpString);
         sprintf(tmpString, "Heat Valve: %s\n", HEATER_VALVE_IS_OPEN() ? "Open" : "Closed");
         UartPrint(tmpString);
 		sprintf(tmpString, "\n");
         UartPrint(tmpString);
+#else
+        sprintf(tmpString, "Time: %0.2d:%0.2d\n", elapsed_minutes, elapsed_seconds);
+		UartPrint(tmpString);
+        //sprintf(tmpString, "A Tmp: 0x%x\n", ambient_temp_v);
+		//UartPrint(tmpString);
+		sprintf(tmpString, "LS Tmp: 0x%x\n", low_side_temp_v);
+        UartPrint(tmpString);
+        sprintf(tmpString, "Fan: 0x%x\n", CCPR2L);
+        UartPrint(tmpString);
+        sprintf(tmpString, "Pump: %s\n", WATER_PUMP_IS_ON() ? "On" : "Off");
+        UartPrint(tmpString);
+        sprintf(tmpString, "Comp: %s\n", COMPRESSOR_IS_ON() ? "On" : "Off");
+        UartPrint(tmpString);
+        sprintf(tmpString, "Tank: %s\n", TANK_IS_FULL() ? "Full" : "Not Full");
+        UartPrint(tmpString);
+        sprintf(tmpString, "Water: 0x%x\n", water_level_v);
+        UartPrint(tmpString);
+        sprintf(tmpString, "W Valve: %s\n", RESERVOIR_VALVE_IS_OPEN() ? "Open" : "Closed");
+        UartPrint(tmpString);
+        sprintf(tmpString, "H Valve: %s\n", HEATER_VALVE_IS_OPEN() ? "Open" : "Closed");
+        UartPrint(tmpString);
+		sprintf(tmpString, "\n");
+        UartPrint(tmpString);
+#endif
 		
         __delay_ms(1000);
     }
