@@ -26,7 +26,37 @@ extern state_t state;
 void interrupt low_isr(void)
 {
 	/* Check all pertinent interrupt flags */
-	
+    
+    /* PORTB interrupt on change */
+	if(INTCONbits.RBIF)
+	{        
+		/* Read PORTB register to clear the latch and determine the 
+         * pin which triggered the interrupt */
+		char tmp = PORTB;
+		
+		/* Determine which events have occurred*/
+		if(tmp & _PORTB_RB0_MASK) // Rising edge (flapper down)
+			ice_fall_event = true;
+		
+		// Power button key down (Falling edge)
+		if(~tmp & _PORTB_RB1_MASK)
+		{
+			if(state == OFF)
+			{
+				TURN_POWER_LED_ON();
+				state = INIT;
+			}
+			else
+			{
+				ALL_OFF();
+				state = OFF;
+			}
+		}
+
+        /* Clear the interrupt */
+		INTCONbits.RBIF = 0;
+	}
+    
 	/* Timer2 Interrupt */
 	if(PIR1bits.TMR2IF)
 	{
@@ -42,36 +72,7 @@ void interrupt low_isr(void)
 			elapsed_seconds = 0;
 		}
 	}
-	
-	/* PORTB interrupt on change */
-	if(INTCONbits.RBIF)
-	{
-		/* Read PORTB register to clear the latch */
-		char tmp = PORTB;
-		/* Clear the interrupt */
-		INTCONbits.RBIF = 0;
-		
-		/* Determine which events have occurred*/
-		if(tmp & _PORTB_RB0_MASK) // Rising edge (flapper down)
-			ice_fall_event = true;
-		
-		// Power button key down (Falling edge)
-		if(!(tmp & _PORTB_RB1_MASK))
-		{
-			if(state == OFF)
-			{
-				TURN_POWER_LED_ON();
-				state = INIT;
-			}
-			else
-			{
-				// Turn everything off
-				ALL_OFF();
-				state = OFF;
-			}
-		}
-	}
-	
+
 	/* Clear all interrupt flags */
 	PIR1 = 0; 
 }
