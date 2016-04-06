@@ -22,7 +22,7 @@
 #define TURN_COMPRESSOR_ON() (PORTAbits.RA4 = 1)
 #define TURN_COMPRESSOR_OFF() (PORTAbits.RA4 = 0)
 //#define TANK_IS_FULL() (PORTBbits.RB2 == 0)
-#define TANK_IS_FULL() (water_level_v < 0x70)
+#define TANK_IS_FULL() (water_level_v != 0xff)
 #define RESERVOIR_VALVE_IS_OPEN() (PORTCbits.RC0)
 #define OPEN_RESERVOIR_VALVE() (PORTCbits.RC0 = 1)
 #define CLOSE_RESERVOIR_VALVE() (PORTCbits.RC0 = 0)
