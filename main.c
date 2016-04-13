@@ -38,16 +38,16 @@
 /* Number of minutes to try filling the tank until it is
  * determined there is no more water in the reservoir 
  * NOTE: It takes approx 50 seconds to fill the tank from empty */
-#define TANK_FILL_TIMEOUT 2
+#define TANK_FILL_TIMEOUT 30
 
 /* Number of minutes to delay the start of tank filling after
  * the first measurement in which the tank is no longer full */
-#define TANK_FILL_START_DELAY 5
+#define TANK_FILL_START_DELAY 10
 
 
 /* Maximum number of minutes to wait for the ice to drop
  * NOTE: This may take a while if the compressor is initially off */
-#define ICE_DROP_TIMEOUT 10
+#define ICE_DROP_TIMEOUT 15
 
 /* Counters generated from Timer2 interrupt */
 extern unsigned char elapsed_seconds;
@@ -63,7 +63,7 @@ state_t state = OFF;
 
 /* Active ice making cycle time
  * NOTE: The longer the duration the larger the ice. */
-unsigned char ice_making_duration = 30;
+unsigned char ice_making_duration = 45;
 
 
 #ifdef UART_ENABLE
@@ -80,8 +80,11 @@ void UartPrint(unsigned char* data)
 		/* Wait for anything buffered to be sent */
         while(!PIR1bits.TXIF)
             ;
+		
+		/* Send the next byte */
         TXREG = data[i];
 		
+		/* Add carriage return for any newline */
 		if(data[i] == '\n')
 		{
 			while(!PIR1bits.TXIF)
@@ -92,6 +95,7 @@ void UartPrint(unsigned char* data)
     }
 }
 #else
+/* NOP calls to save program space */
 #define UartPrint() ;
 #define sprintf() ;
 #endif
@@ -102,9 +106,6 @@ void main(void)
     unsigned char low_side_temp_v;
     unsigned char water_level_v;
     char tmpString[24];
- #ifdef MEASURE_AMBIENT_TEMP
-    unsigned char ambient_temp_v;
-#endif
 	
     /*
      * Configure System Clock for 16MHz
@@ -213,25 +214,11 @@ void main(void)
 		while(ADCON0bits.nDONE)
 			;
 		/* Clear ADC interrupt MAY NOT BE NEEDED */
-		PIR1bits.ADIF = 0;
+		//PIR1bits.ADIF = 0;
 		/* Read low side temp thermistor voltage */
 		low_side_temp_v = ADRES;
+
 		
-#ifdef MEASURE_AMBIENT_TEMP
-		/* Select ADC Channel 2 (AN2) */
-		ADCON0bits.CHS = 2;
-		/* Start ADC */
-		ADCON0bits.GO = 1;
-		/* Wait for ADC to complete */
-		while(ADCON0bits.nDONE)
-			;
-		/* Clear ADC interrupt MAY NOT BE NEEDED */
-		PIR1bits.ADIF = 0;
-		/* Read ambient temp thermistor voltage */
-		ambient_temp_v = ADRES;
-#endif
-		
-        
         /* Select ADC Channel 8 (AN8) */
 		ADCON0bits.CHS = 8;
 		/* Start ADC */
@@ -240,12 +227,12 @@ void main(void)
 		while(ADCON0bits.nDONE)
 			;
 		/* Clear ADC interrupt MAY NOT BE NEEDED */
-		PIR1bits.ADIF = 0;
+		//PIR1bits.ADIF = 0;
 		/* Read low side temp thermistor voltage */
 		water_level_v = ADRES;
+
         
-        
-		// Clear console
+		/* Clear console */
 		UartPrint((unsigned char*)"\x1B[2J\x1B[H");
 		
         /* Check for and clear UART overrun */
@@ -254,7 +241,8 @@ void main(void)
 			RCSTAbits.CREN = 0;
 			RCSTAbits.CREN = 1;
 		}
-		/* Get input from UART */
+		
+		/* Get input from UART if available */
         if(PIR1bits.RCIF)
 		{
 			unsigned char rx_byte = RCREG;
@@ -262,98 +250,9 @@ void main(void)
                 ice_making_duration--;
             if(rx_byte == ']')
                 ice_making_duration++;
-
-#ifdef TEST_MODE
-		/*
-		 * Test Mode Commands
-		 * ----------------------------
-		 * q - Toggle Power LED
-		 * w - Toggle Water LED
-		 * e - Toggle Ice LED
-		 * r - Fan Off
-		 * t - Fan 50%
-		 * y - Fan 100%
-		 * 
-		 * a - Toggle Water Pump
-		 * s - Toggle Compressor
-		 * d - Toggle Reservoir Valve
-		 * f - Toggle Heater Valve
-		 * 
-		 * <space> - Turn everything off
-		 */
-			switch(rx_byte)
-			{
-				case 'q':
-					if(PORTBbits.RB5)
-						TURN_POWER_LED_OFF();
-					else
-						TURN_POWER_LED_ON();
-					break;
-				case 'w':
-					if(PORTCbits.RC4)
-						TURN_LOW_WATER_LED_OFF();
-					else
-						TURN_LOW_WATER_LED_ON();
-					break;
-				case 'e':
-					if(PORTCbits.RC3)
-						TURN_ICE_FULL_LED_OFF();
-					else
-						TURN_ICE_FULL_LED_ON();
-					break;
-				case 'r':
-					SET_FAN_SPEED(0x00);
-					break;
-				case 't':
-					SET_FAN_SPEED(0x80);
-					break;
-				case 'y':
-					SET_FAN_SPEED(0xff);
-					break;
-				case 'a':
-					if(WATER_PUMP_IS_ON())
-						TURN_WATER_PUMP_OFF();
-					else
-						TURN_WATER_PUMP_ON();
-					break;
-				case 's':
-					if(COMPRESSOR_IS_ON())
-						TURN_COMPRESSOR_OFF();
-					else
-						TURN_COMPRESSOR_ON();
-					break;
-				case 'd':
-					if(RESERVOIR_VALVE_IS_OPEN())
-						CLOSE_RESERVOIR_VALVE();
-					else
-						OPEN_RESERVOIR_VALVE();
-					break;
-				case 'f':
-					if(HEATER_VALVE_IS_OPEN())
-						CLOSE_HEATER_VALVE();
-					else
-						OPEN_HEATER_VALVE();
-					break;
-				case ' ':
-					ALL_OFF();
-					break;
-			}
-		}
-
-		if(ice_fall_event)
-		{
-			ice_fall_event = false;
-			UartPrint((unsigned char*)"Ice fall event.\n");
-		}
-		
-		if(state == INIT)
-		{
-		    state = OFF;
-		    UartPrint((unsigned char*)"Power button pressed.\n");
-		}
-#else
         }
         
+		/* State machin logic */
         switch(state)
         {
             case OFF:
@@ -361,6 +260,8 @@ void main(void)
 				/* Don't keep time in the off state */
 				elapsed_minutes = 0;
 				elapsed_seconds = 0;
+				tank_fill_start_time = 0;
+				ice_fall_event = false;
                 sprintf(tmpString, "Off\n");
                 break;
             case INIT:
@@ -398,6 +299,7 @@ void main(void)
 					/* Reset timer */
 					elapsed_minutes = 0;
 					elapsed_seconds = 0;
+					ice_fall_event = false;
 					/* Release the ice */
 					state = RELEASING_ICE;
 				}	
@@ -425,7 +327,6 @@ void main(void)
                 sprintf(tmpString, "Releasing Ice\n");
                 break;
 			case OUT_OF_WATER:
-                /* TODO: Do something */
 				ALL_OFF();
 				TURN_LOW_WATER_LED_ON();
 				sprintf(tmpString, "Out of water\n");
@@ -471,33 +372,24 @@ void main(void)
             }
         }
         
+		/* Print current operating parameters for debug purposes */
 		UartPrint((unsigned char*)"State: ");
-        UartPrint(tmpString);
-#endif
-		
+        UartPrint(tmpString);		
         sprintf(tmpString, "Time: %0.2d:%0.2d (%d min)\n", elapsed_minutes, elapsed_seconds, ice_making_duration);
 		UartPrint(tmpString);
-		sprintf(tmpString, "Tank fill start: %d min\n", tank_fill_start_time);
+		sprintf(tmpString, "Start tank fill: %d min\n", tank_fill_start_time);
 		UartPrint(tmpString);
-#ifdef MEASURE_AMBIENT_TEMP
-        sprintf(tmpString, "A Temp: 0x%x\n", ambient_temp_v);
-		UartPrint(tmpString);
-#endif
-		sprintf(tmpString, "LS Temp: 0x%x\n", low_side_temp_v);
+		sprintf(tmpString, "Tank: %s (0x%x)\n", TANK_IS_FULL() ? "Full" : "Not Full", water_level_v);
         UartPrint(tmpString);
-#if 0
-        sprintf(tmpString, "Fan: 0x%x\n", CCPR2L);
+		sprintf(tmpString, "Low Side Temp: 0x%x\n", low_side_temp_v);
         UartPrint(tmpString);
-#endif
         sprintf(tmpString, "Pump: %s\n", WATER_PUMP_IS_ON() ? "On" : "Off");
         UartPrint(tmpString);
-        sprintf(tmpString, "Comp: %s\n", COMPRESSOR_IS_ON() ? "On" : "Off");
+        sprintf(tmpString, "Compressor: %s\n", COMPRESSOR_IS_ON() ? "On" : "Off");
         UartPrint(tmpString);
-        sprintf(tmpString, "Tank: %s (0x%x)\n", TANK_IS_FULL() ? "Full" : "Not Full", water_level_v);
+        sprintf(tmpString, "Water Valve: %s\n", RESERVOIR_VALVE_IS_OPEN() ? "Open" : "Closed");
         UartPrint(tmpString);
-        sprintf(tmpString, "W Valve: %s\n", RESERVOIR_VALVE_IS_OPEN() ? "Open" : "Closed");
-        UartPrint(tmpString);
-        sprintf(tmpString, "H Valve: %s\n", HEATER_VALVE_IS_OPEN() ? "Open" : "Closed");
+        sprintf(tmpString, "Heater Valve: %s\n", HEATER_VALVE_IS_OPEN() ? "Open" : "Closed");
         UartPrint(tmpString);
 		sprintf(tmpString, "\n\n");
         UartPrint(tmpString);
