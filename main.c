@@ -188,6 +188,13 @@ void main(void)
 	/* Start with everything off */
 	ALL_OFF();
 	
+	/* Wait before checking button press */
+	{
+		unsigned int count = 1;
+		while(count != 0)
+			count++;
+	}
+	
 	/* If Power button is held during power on start in RELEASING_ICE state */
     /* NOTE: The read of PORTB will set the IOC latch */
     if(~PORTB & _PORTB_RB1_MASK)
@@ -252,11 +259,12 @@ void main(void)
                 ice_making_duration++;
         }
         
-		/* State machin logic */
+		/* State machine logic */
         switch(state)
         {
             case OFF:
 				/* Nothing to be done as the interrupt handles it */
+				ALL_OFF();
 				/* Don't keep time in the off state */
 				elapsed_minutes = 0;
 				elapsed_seconds = 0;
@@ -265,6 +273,9 @@ void main(void)
                 sprintf(tmpString, "Off\n");
                 break;
             case INIT:
+				/* Turn everything off. The fill happens in the common code later */
+				ALL_OFF();
+				TURN_POWER_LED_ON();
                 /* Wait for the tank to fill */
 				if(TANK_IS_FULL())
 				{
@@ -283,32 +294,29 @@ void main(void)
 					 * This should help with the first run */
 					if(low_side_temp_v > 0x50)
 						elapsed_minutes = 0;
-					
-					/* Close heat valve and turn on condenser fan, compressor, and water pump */
-					CLOSE_HEATER_VALVE();
-					SET_FAN_SPEED(0xff);
-					TURN_COMPRESSOR_ON();
-					TURN_WATER_PUMP_ON();
 				}
 				else
 				{
-					/* Turn off fan, compressor, and water pump */
-					SET_FAN_SPEED(0);
-					TURN_COMPRESSOR_OFF();
-					TURN_WATER_PUMP_OFF();
 					/* Reset timer */
 					elapsed_minutes = 0;
 					elapsed_seconds = 0;
 					ice_fall_event = false;
 					/* Release the ice */
 					state = RELEASING_ICE;
-				}	
+				}
+				/* Turn on condenser fan, compressor, and water pump */
+				SET_FAN_SPEED(0xff);
+				CLOSE_HEATER_VALVE();
+				TURN_COMPRESSOR_ON();
+				TURN_WATER_PUMP_ON();
+				TURN_POWER_LED_ON();
+				TURN_LOW_WATER_LED_OFF();
+				TURN_ICE_FULL_LED_OFF();
                 sprintf(tmpString, "Making Ice\n");
                 break;
             case RELEASING_ICE:
 				if(ice_fall_event || (elapsed_minutes >= ICE_DROP_TIMEOUT))
 				{
-					CLOSE_HEATER_VALVE();
 					/* Clear ice fall event */
 					ice_fall_event = false;
 					/* Reset timer */
@@ -317,23 +325,27 @@ void main(void)
 					/* Start making ice again */
 					state = MAKING_ICE;
 				}
-				else
-				{
-					/*  Open the heater valve and wait for the ice to fall */
-					OPEN_HEATER_VALVE();
-                    SET_FAN_SPEED(0xff);
-					TURN_COMPRESSOR_ON();
-				}
+				/*  Open the heater valve and wait for the ice to fall */
+				TURN_WATER_PUMP_OFF();
+				SET_FAN_SPEED(0xff);
+				OPEN_HEATER_VALVE();
+				TURN_COMPRESSOR_ON();
+				TURN_POWER_LED_ON();
+				/* NOTE: For Debugging Purposes */
+				TURN_LOW_WATER_LED_ON();
+				TURN_ICE_FULL_LED_ON();
                 sprintf(tmpString, "Releasing Ice\n");
                 break;
 			case OUT_OF_WATER:
 				ALL_OFF();
+				TURN_POWER_LED_ON();
 				TURN_LOW_WATER_LED_ON();
 				sprintf(tmpString, "Out of water\n");
 				break;
 			case ICE_BIN_FULL:
                 /* TODO: Implement */
 				ALL_OFF();
+				TURN_POWER_LED_ON();
 				TURN_ICE_FULL_LED_ON();
 				sprintf(tmpString, "Ice bin full\n");
 				break;
@@ -371,6 +383,8 @@ void main(void)
                 }
             }
         }
+		else
+			CLOSE_RESERVOIR_VALVE();
         
 		/* Print current operating parameters for debug purposes */
 		UartPrint((unsigned char*)"State: ");
